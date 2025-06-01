@@ -1,3 +1,4 @@
+const db = require('../models');
 const {
   loan_applications,
   comakers,
@@ -5,7 +6,7 @@ const {
   loan_amortizations,
   loan_insurances, 
   staff_logs
-} = require('../models');
+} = db;
 const dayjs = require('dayjs');
 const { Op, fn, col, literal } = require('sequelize');
 
@@ -168,9 +169,21 @@ const generateAmortizationSchedule = ({ loanAmount, termMonths, interestRate }) 
 
 // Create Loan
 const createLoan = async (req, res) => {
+  console.log(req.body)
   const userId  = req.user.id;
+  const transaction = await db.sequelize.transaction();
+
   try {
-    const loan = await loan_applications.create(req.body);
+    //added these for creation of maker and comakers on the db
+    const maker = await makers.create(req.body, { transaction });
+    const comaker = await comakers.create(req.body.co_maker, { transaction });
+
+    //same as before for the creatioin of loan data but added maker id
+    const loanData = { ...req.body, maker_id: maker.id};
+    const loan = await loan_applications.create(loanData, { transaction });
+
+    //for the loan-comaker table to associate the comaker to the specific loan
+    await db.loan_comakers.create({ loan_id: loan.id, comaker_id: comaker.id}, { transaction });
 
     // Auto-generate amortization
     const amortizationSchedule = generateAmortizationSchedule({
@@ -184,13 +197,26 @@ const createLoan = async (req, res) => {
       ...item
     }));
 
-    await loan_amortizations.bulkCreate(amortizationRecords);
-    await staff_logs.create({ user_id: userId, action: 'create loan'});
+    await loan_amortizations.bulkCreate(amortizationRecords, {transaction});
+    await staff_logs.create({ user_id: userId, action: 'create loan'}, { transaction });
 
-    res.status(201).json({ loan, amortizationSchedule });
+    // commit transac if all goods
+    await transaction.commit();
+
+    res.status(201).json({ 
+      maker, 
+      comaker,
+      loan, 
+      amortizationSchedule 
+    });
+    
   } catch (err) {
+    await transaction.rollback();
     console.error(err);
-    res.status(500).json({ message: 'Loan creation failed', error: err });
+    res.status(500).json({ 
+      message: 'Loan creation failed', 
+      error: err.message 
+    });
   }
 };
 
